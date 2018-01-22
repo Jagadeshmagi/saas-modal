@@ -1,0 +1,33 @@
+#!/bin/bash
+
+InstanceId=$1
+
+#InstanceId=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select instanceid from contact where email='sudhirk@cavirin.com'"`
+
+function start_instances () {
+   echo "inside start_instances"   
+   state=`aws ec2 describe-instances --instance-ids $InstanceId --output text | grep -w STATE | awk '{print $3}'`
+   echo "state is $state"
+   if ( [ $state == "stopped" ]); then      
+       echo "starting the running instance"
+       aws ec2 start-instances --instance-ids $InstanceId --output text
+       salesforcecustomerid=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select salesforcecustomerid from customer where id=(select customerid from instances where pulsarinstanceid='$InstanceId')"`
+
+       #id=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select id from customer order by id desc limit 1"`
+       echo "salesforcecustomerid is $salesforcecustomerid"
+       var1="saas-dbbucket-" 
+       updatevar1=$var1$salesforcecustomerid
+       aws s3 rb s3://$updatevar1 --force
+       sleep 30
+       Public_Ip_ubuntu=$(aws ec2 describe-instances --instance-ids ${InstanceId} \
+          --query 'Reservations[*].Instances[*].PublicIpAddress' --output text) ;
+       echo "Public_IP after start: '${Public_Ip_ubuntu}'"
+       query="update instances set ipaddress='$Public_Ip_ubuntu',status='Active' where pulsarinstanceid='$InstanceId'"
+       sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -c "$query"
+   else
+     echo "ec2 instance is not stopped state"
+   fi
+}
+
+start_instances
+

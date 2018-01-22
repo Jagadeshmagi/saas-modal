@@ -1,0 +1,130 @@
+#!/bin/bash
+
+# LOGGING FUNCTIONS
+function logSCREEN () {
+  echo -e "$*\n"
+}
+
+function logDEBUG () {
+  echo -e "$*\n" >> $LOGFILE
+}
+
+function logBOTH () {
+  logSCREEN "$*"
+  logDEBUG "$*"
+}
+
+#CREATING LOG DIRECTORY
+LOGFILE=~/pulsar_system_saas_installer.log
+sudo rm -f $LOGFILE
+#Generate timestamp in log
+dateran=`date +%Y%m%d%H%M%S`
+touch $LOGFILE
+log_cre_stat=$?
+if [[ $log_cre_stat -ne "0" ]]; then
+	logSCREEN "Couldn't create log: ~/pulsar_system_installer.log"
+	exit_on_error 3
+else
+	logBOTH ""
+	logBOTH "------------------------------------------------------------"
+	logBOTH "----- Pulsar System saas installer Log started at $dateran ------"
+	logBOTH "-------------------------------------------------------------"
+	logBOTH ""
+fi
+
+#Updating installation repositories quitely
+sudo apt-get -qq -y update > /dev/null
+
+#Check for npm
+logBOTH "Checking NodeJs Package Manager"
+npm_presence="$(which npm)"
+if echo "$npm_presence" | grep -q "/usr/bin/npm"; then
+  logBOTH "npm already is present"
+else
+  logBOTH "npm not present"
+  sudo apt-get install -y npm
+fi
+
+#Install for nodejs
+logBOTH "Installing NodeJs"
+sudo curl -sL https://deb.nodesource.com/setup_6.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+#Install process manager
+logBOTH "Installing NodeJS Process Manager pm2"
+sudo npm install pm2 -g
+
+#Install jq
+sudo apt-get install -y jq
+
+#Check for python3
+logBOTH "Checking Python3"
+python_version="$(python3 --version)"
+if echo "$python_version" | grep -q "3."; then
+  logBOTH "Python3 Present";
+  python3_presence=true
+else
+  logBOTH "Python3 not Present";
+  python3_presence=false  
+fi
+logBOTH "Installing Python3"
+if [ "$python3_presence" = false ]; then
+   sudo apt-get install -y python3
+fi
+
+sudo apt-get install -y python3-pip
+
+#Install for awscli
+logBOTH "Installing AWS CLI"
+sudo pip3 install awscli
+
+#sudo debconf-set-selections <<< "postfix postfix/mailname string your.hostname.com"
+#sudo debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
+#sudo apt-get install -y postfix
+
+#Install mailutils 
+#logBOTH "Installing mailutils"
+#sudo apt-get install -y mailutils
+#sudo dpkg-reconfigure postfix
+
+#Install postgres
+logBOTH "Installing Postgresql-9.5"
+sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ `lsb_release -cs`-pgdg main" >> /etc/apt/sources.list.d/pgdg.list'
+sudo wget -q https://www.postgresql.org/media/keys/ACCC4CF8.asc -O - | sudo apt-key add -
+sudo apt-get -y update
+sudo apt-get install -y postgresql-9.5
+
+#Change the postgres password
+sudo -u postgres psql -U postgres -d postgres -c "alter user postgres with password 'admin';"
+
+#Check for nginx
+logBOTH "Checking Nginx"
+nginx_presence="$(which nginx)"
+if echo "$nginx_presence" | grep -q "/usr/sbin/nginx"; then
+   logBOTH "Nginx Present";
+else
+  logBOTH "Installing Nginx"
+  sudo apt-get install -y nginx
+fi
+
+#Install redis
+logBOTH "Installing Redis"
+sudo mkdir -p ${HOME}/redis
+sudo chmod -R 777 ${HOME}/redis
+wget http://download.redis.io/redis-stable.tar.gz -P ${HOME}/redis
+sudo tar -xvzf ${HOME}/redis/redis-stable.tar.gz -C ${HOME}/redis
+sudo rm -f {HOME}/redis/redis-stable.tar.gz
+(cd ${HOME}/redis/redis-stable/deps; sudo make hiredis jemalloc linenoise lua geohash-int; cd ${HOME}/redis/redis-stable; sudo make)
+
+#Run redis as a service
+logBOTH "Starting redis as a service"
+sudo rm -rf /etc/redis /var/redis
+sudo mkdir /etc/redis /var/redis
+sudo cp ${HOME}/redis/redis-stable/src/redis-server ${HOME}/redis/redis-stable/src/redis-cli /usr/local/bin
+sudo cp ${HOME}/redis/redis-stable/utils/redis_init_script /etc/init.d/redis_6379
+sudo cp ${HOME}/redis/redis-stable/redis.conf /etc/redis/6379.conf
+sudo mkdir -p /var/redis/6379
+sudo sed -e "s/^daemonize no$/daemonize yes/" -e "s/^# bind 127.0.0.1$/bind 127.0.0.1/" -e "s/^dir \.\//dir \/var\/redis\/6379\//" -e "s/^loglevel verbose$/loglevel notice/" -e "s/^logfile \"\"$/logfile \"\/var\/log\/redis_6379.log\"/" ${HOME}/redis/redis-stable/redis.conf | sudo tee  /etc/redis/6379.conf
+
+sudo update-rc.d redis_6379 defaults
+sudo /etc/init.d/redis_6379 start

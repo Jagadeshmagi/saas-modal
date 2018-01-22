@@ -1,0 +1,46 @@
+#!/bin/bash
+
+IPAddress=$1
+username=$2
+password=$3
+firstname=$4
+lastname=$5
+#id=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select id from customer order by id desc limit 1"`
+#email=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select email from contact WHERE customerid=$id"`
+
+pulsarusername="administrator"
+pulsarpassword="cavirin123"
+
+function fetchLoginTokens(){
+Basic_token=$( echo -n ${pulsarusername}:${pulsarpassword}  | base64 )
+#echo ${Basic_token}
+OAUTH_OBJ=`curl -H "Authorization:Basic ${Basic_token}"  -X POST http://$IPAddress:8080/arap-server/api/v0/login`
+ACCESS_TOKEN=$(echo -n  $OAUTH_OBJ | jq -r '.access_token')
+#echo ${ACCESS_TOKEN}
+REFRESH_TOKEN=$(echo -n $OAUTH_OBJ | jq -r '.refresh_token')
+}
+
+construct_user_json(){
+cat<<EOF
+{
+ "username":"$username",
+  "password":"$password",
+  "firstName":"$firstname",
+  "lastName":"$lastname",
+  "title":"Mr",
+  "roles":"ROLE_ADMIN",
+  "email":"$username"
+}
+EOF
+}
+
+add_user(){
+user_OBJ=`curl -X POST -H "Authorization:Bearer ${ACCESS_TOKEN}" -H "Content-Type:application/json" http://$IPAddress:8080/arap-server/settings/users -d "$(construct_user_json)" `
+echo "$user_OBJ"
+#credentialid=$(echo -n $credentialId_OBJ | jq -r '.id')
+#echo "credentialid is ${credentialid}"
+}
+
+fetchLoginTokens
+add_user
+

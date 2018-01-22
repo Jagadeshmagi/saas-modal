@@ -1,0 +1,173 @@
+#!/bin/bash
+
+email=$1
+host=$2
+
+function read_config () {
+  aws_access_key_id=$(sed -n 's/^aws_access_key_id=//p' /var/lib/saas-provision.properties)
+  echo "access key is $aws_access_key_id"
+  aws_secret_access_key=$(sed -n 's/^aws_secret_access_key=//p' /var/lib/saas-provision.properties)
+  region=$(sed -n 's/^region=//p' /var/lib/saas-provision.properties)
+  securitygroupname=$(sed -n 's/^securitygroupname=//p' /var/lib/saas-provision.properties)
+  ami_id=$(sed -n 's/^ami_id=//p' /var/lib/saas-provision.properties)
+}
+
+function get_ip_address () {
+#Identify the instance_id,Public IP related to aws cloud
+#Identify the Primary IP Address other than aws cloud
+echo "Finding IPAddress settings"
+instance_id=$(curl --silent --write-out "\n%{http_code}\n" http://169.254.169.254/latest/meta-data/instance-id)
+instance_id_status_code=$(echo "$instance_id" | sed -n '$p')
+if [ "$instance_id_status_code" -eq "200" ]; then
+   echo "Instance is AWS Cloud"
+   public_ip=$(curl --silent --write-out "\n%{http_code}\n" http://169.254.169.254/latest/meta-data/public-ipv4)
+   public_ip_status_code=$(echo "$public_ip" | sed -n '$p')
+   if [ "$public_ip_status_code" -eq "200" ]; then     
+     public_ip=$(echo "$public_ip" | sed '$d')
+     echo "Public IP Addess is ${public_ip}"
+     ip_mine=${public_ip}   
+   else
+     private_ip=$(curl --silent --write-out "\n%{http_code}\n" http://169.254.169.254/latest/meta-data/local-ipv4)
+     private_ip_status_code=$(echo "$private_ip" | sed -n '$p')
+     if [ "$private_ip_status_code" -eq "200" ]; then        
+        private_ip=$(echo "$private_ip" | sed '$d')
+        echo "Private IP Addess is ${private_ip}"
+        ip_mine=${private_ip}
+        
+     else
+        echo "Error response for private_ip"
+     fi
+   fi
+else
+  echo "Instance is not AWS Cloud"
+  ip_mine="$(sudo ifconfig `ip route | grep default | head -1 | sed 's/\(.*dev \)\([a-z0-9]*\)\(.*\)/\2/g'` | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -1)"
+  echo "Primary IPAddress is ${ip_mine}"
+fi
+}
+
+read_config
+
+if [ -d ~/.aws ]; then
+    echo ".aws directory exist"
+    sudo rm -rf ~/.aws
+else
+   echo ".aws directory not exist"
+fi
+
+if [ -f "${HOME}/.aws/config" ]; then        
+        sudo rm -f ~/.aws/config
+fi
+
+sudo mkdir -p ~/.aws
+sudo touch ~/.aws/config
+echo "[default]" | sudo tee -a ~/.aws/config
+echo "aws_access_key_id=$aws_access_key_id" | sudo tee -a ~/.aws/config
+echo "aws_secret_access_key=$aws_secret_access_key" | sudo tee -a ~/.aws/config
+echo "region=$region" | sudo tee -a ~/.aws/config
+echo "output=json" | sudo tee -a ~/.aws/config
+#source ~/.aws/config
+
+#GRPNAME="awstest-ubuntu"
+GRPNAME=$securitygroupname
+aws ec2 describe-security-groups --group-names $GRPNAME > /dev/null 2> /dev/null
+if [ $? -eq 0 ]; then
+    # security group exists, move on
+    echo "Using existing security group $GRPNAME"
+else
+   SECURITY_GROUP_ubuntu=$(aws ec2 create-security-group --group-name "$GRPNAME" --description "security group for development environment in EC2" --output text);
+   echo ${SECURITY_GROUP_ubuntu} 
+   echo "Security groups are created in aws console"
+fi
+
+aws ec2 describe-security-groups --filters "Name=ip-permission.to-port,Values=22"  --query 'SecurityGroups[?length(IpPermissions[?ToPort==`22` && contains(IpRanges[].CidrIp, `0.0.0.0/0`)]) > `0`].{GroupName: GroupName, TagName: Tags[?Key==`Name`].Value | [0]}' > output.txt
+
+#grep "awstest-ubuntu" output.txt
+grep "$GRPNAME" output.txt
+if [ $? -eq 0 ]; then
+    # key pair exists, move on
+    echo "rule already exist"
+else
+   echo "inside else for rule"
+   aws ec2 authorize-security-group-ingress --group-name "$GRPNAME" --protocol tcp --port 22 --cidr 0.0.0.0/0
+   aws ec2 authorize-security-group-ingress --group-name "$GRPNAME" --protocol tcp --port 443 --cidr 0.0.0.0/0
+   aws ec2 authorize-security-group-ingress --group-name "$GRPNAME" --protocol tcp --port 80 --cidr 0.0.0.0/0
+   aws ec2 authorize-security-group-ingress --group-name "$GRPNAME" --protocol tcp --port 8080 --cidr 0.0.0.0/0
+fi
+
+#KEYNAME="devenv-key-ubuntu"
+KEYNAME="pulsar-saas-vm"
+aws ec2 describe-key-pairs --key-name $KEYNAME > /dev/null 2> /dev/null
+if [ $? -eq 0 ]; then
+    # key pair exists, move on
+    echo "Using existing key pair $KEYNAME"
+else
+   echo "inside else for keypair"
+   Key_Pair=$(aws ec2 create-key-pair --key-name "pulsar-saas-vm"  --query 'KeyMaterial' --output text > pulsar-saas-vm.pem)
+  echo "Key pairs are created in aws console"
+fi
+
+#Key_Pair=$(aws ec2 create-key-pair --key-name devenv-key-ubuntu  --query 'KeyMaterial' --output text > devenv-key-ubuntu.pem)
+#echo "Key pairs are created in aws console"
+
+#instance_ubuntu=$(aws ec2 run-instances --image-id ami-678d291d --count 1 --instance-type m4.xlarge \
+#   --security-groups awstest-ubuntu --key-name devenv-key-ubuntu \
+#   --query 'Instances[0].InstanceId' --output text) ;
+
+#working
+#instance_ubuntu=$(aws ec2 run-instances --image-id ami-678d291d ami-dbad06a1--count 1 --instance-type m4.xlarge \
+#   --security-group-ids sg-8eeacffc --key-name sudhir-test-vm \
+#   --query 'Instances[0].InstanceId' --output text) ;
+
+instance_ubuntu=$(aws ec2 run-instances --image-id $ami_id --count 1 --instance-type m4.xlarge \
+   --security-groups $GRPNAME --key-name $KEYNAME \
+   --query 'Instances[0].InstanceId' --output text) ;
+
+
+echo "Instance: '${instance_ubuntu}'"
+
+sleep 60
+Public_Ip_ubuntu=$(aws ec2 describe-instances --instance-ids ${instance_ubuntu} \
+    --query 'Reservations[*].Instances[*].PublicIpAddress' --output text) ;
+
+echo "Public_IP: '${Public_Ip_ubuntu}'"
+
+PublicDnsName=$(aws ec2 describe-instances --instance-ids ${instance_ubuntu} \
+    --query 'Reservations[*].Instances[*].PublicDnsName' --output text) ;
+
+echo "Public_DNS: '${PublicDnsName}'"
+
+get_ip_address
+echo "Local IP Address is $ip_mine"
+
+#`curl -X PUT http://$ip_mine:3000/api/updateip?ip=${Public_Ip_ubuntu}&email=$email `;
+
+#curl -X PUT 'http://${Public_Ip_ubuntu}:3000/api/updateip?ip=${Public_Ip_ubuntu}&email=kumar.sudhir1@gmail.com'
+
+#sleep 60
+
+id=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select id from customer order by id desc limit 1"`
+echo "id is $id"
+
+salesforcecustomerid=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select salesforcecustomerid from customer WHERE id=$id"`
+echo "salesforcecustomerid is $salesforcecustomerid"
+state=`aws ec2 describe-instance-status --instance-ids ${instance_ubuntu} --query InstanceStatuses[*].InstanceState.Name --output text`
+echo "state is $state"
+
+tag="SAASInstanceNEW-"
+updatetag=$tag$salesforcecustomerid
+echo "updatetag is $updatetag"
+
+#if [ ! -z "${Public_Ip_ubuntu}" ]; then
+if ( [ ! -z "${Public_Ip_ubuntu}" ] && [ $state == "running" ]); then
+      echo "Public_IP: '${Public_Ip_ubuntu}'"
+      aws ec2 create-tags --resources ${instance_ubuntu} --tags Key="Name",Value="$updatetag"
+      #redis-cli publish notifications "{\"server\":\"${Public_Ip_ubuntu}\",\"email\":\"${email}\"}"
+      redis-cli publish notifications "{\"server\":\"${Public_Ip_ubuntu}\",\"instanceid\":\"${instance_ubuntu}\",\"instancepublicdns\":\"${PublicDnsName}\",\"email\":\"${email}\",\"host\":\"${host}\"}"
+      #echo -e "Your Instance created Successfully\nPulsar URl is https://${Public_Ip_ubuntu}/pulsar" | mail -s "Pulsar Instance Created" $email
+else
+     echo "Not got the Public IP"
+     redis-cli publish notifications "{\"email\":\"${email}\"}"
+fi
+
+#Added the logic for nginx entry whenever the new instances are provisioned
+#(cd /var/lib/cavirin_saas/scripts; sudo bash ./pulsar-saas-ssl.sh ${Public_Ip_ubuntu})

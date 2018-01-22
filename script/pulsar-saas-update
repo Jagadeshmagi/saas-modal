@@ -1,0 +1,104 @@
+#!/bin/bash
+##pulsar-installer script - should be ran post successful completion of pulsar-system-installer
+
+# LOGGING FUNCTIONS
+function logSCREEN () {
+  echo -e "$*\n"
+}
+
+function logDEBUG () {
+  echo -e "$*\n" >> $LOGFILE
+}
+
+function logBOTH () {
+  logSCREEN "$*"
+  logDEBUG "$*"
+}
+
+#EXIT_ON_ERROR FUNCTION
+function exit_on_error () {
+  logBOTH "Error. Quitting with exit code: $*"
+  exit "$*"
+}
+
+function create_lib_directory() {
+
+   logBOTH "Inside create_lib_directory"
+
+   #Checking the presence of /var/lib/cavirin_saas directory
+   if [ -d /var/lib/cavirin_saas ]; then
+      echo "Directory already exists for /var/lib/cavirin_saas"
+      sudo rm -rf /var/lib/cavirin_saas   
+   fi
+
+   logBOTH "Creating directory /var/lib/cavirin_saas"
+   mkdir -p -m 777 /var/lib/cavirin_saas
+   lib_dir_stat=$?
+   if [[ $lib_dir_stat -ne "0" ]]; then
+   		logBOTH "Couldn't create directory /var/lib/cavirin_saas"
+	  	exit_on_error 1
+   fi
+   mkdir -p /var/lib/cavirin_saas/dmlScripts
+   mkdir -p /var/lib/cavirin_saas/scripts
+   #mkdir -p /var/lib/cavirin_saas/notification-servies
+   mkdir -p /var/lib/cavirin_saas/SaasApp
+   sudo cp -r ${INSTALLER_WORK_DIR}/dmlScripts/* /var/lib/cavirin_saas/dmlScripts   
+   sudo cp -r ${INSTALLER_WORK_DIR}/SaasApp /var/lib/cavirin_saas/
+   sudo cp -r ${INSTALLER_WORK_DIR}/script/* /var/lib/cavirin_saas/scripts    
+}
+
+logSCREEN ""
+logSCREEN "--------- Start of pulsar-saas-installer script ---------"
+TARFILENAME="Pulsar-SaaS.tar.gz"
+ORIG_LAUNCH_DIR=`pwd`
+DATETIME=$(date +"%d%b%y_%H%M")
+
+INSTALLER_WORK_DIR="${ORIG_LAUNCH_DIR}/cavirin_saas_installer_workdir_${DATETIME}"
+sudo mkdir -p "${INSTALLER_WORK_DIR}"
+
+if [ ! -d "${INSTALLER_WORK_DIR}" ]; then
+  echo "Cannot create the Directory at: '${INSTALLER_WORK_DIR}'."
+  echo "EXITING DUE TO ERROR."
+  exit 1
+fi
+
+LOGFILE="${INSTALLER_WORK_DIR}/cavirin_saas_installer_logfile.txt"
+sudo touch "$LOGFILE"
+
+if [ -f ${ORIG_LAUNCH_DIR}/${TARFILENAME} ]; then
+  logBOTH "unpacking installer packages into installer work dir" 
+  sudo tar -xzf ${ORIG_LAUNCH_DIR}/${TARFILENAME} -C ${INSTALLER_WORK_DIR}
+fi
+
+logBOTH "Deleting all pm2 processes"
+sudo pm2  delete all
+pm2_del_stat=$?
+if [[ $pm2_del_stat -ne "0" ]]; then
+	logBOTH "Couldn't delete all pm2 processes"
+	#exit_on_error 9
+fi
+create_lib_directory
+
+#PREPARING FOR THE DML
+# logBOTH "DML preparation"
+# declare -i EXIT_VAL=0
+# (cd /var/lib/cavirin_saas/dmlScripts; sudo chmod +x DBInstallRunner.sh; sudo bash ./DBInstallRunner.sh)
+# EXIT_VAL=$(( $EXIT_VAL + $? ))
+# if [ "${EXIT_VAL}" == "0" ]; then
+#      logBOTH "DBInstallRunner successfull"
+# else
+#       	logBOTH "DBInstallRunner failed"
+#       	exit_on_error 29
+# fi
+
+#Starting NodeJS Process Manager(pm2) for notification-service
+logBOTH "Starting pm2 processes for notification-service"
+(cd /var/lib/cavirin_saas/SaasApp/notification-servies; sudo npm install; sudo pm2 start notifListener.js --name notifListener; sudo pm2 update)
+
+#Starting NodeJS Process Manager(pm2) for
+(cd /var/lib/cavirin_saas/SaasApp; sudo npm install; cd /var/lib/cavirin_saas/SaasApp/src; sudo npm run production; sudo pm2 start npm -- start; sudo pm2 update)
+
+#Copy saas-provision-script to /var/lib
+sudo cp /var/lib/cavirin_saas/scripts/saas-provision-script /var/lib
+
+sudo rm -rf "${INSTALLER_WORK_DIR}"

@@ -1,0 +1,80 @@
+#!/bin/bash
+InstanceId=$1
+action=$2
+custid=$3
+export PGPASSWORD='admin'
+
+function db_backup () {
+ echo "inside db_backup"
+ #CREATING BACKUP LOCATION
+ if [ -d /opt/backup ]; then
+      echo "Backup directory already exists as /opt/backup"
+	  sudo chmod -R 777 /opt/backup
+ else
+      echo "Creating backup directory at /opt/backup"
+      mkdir -p /opt/backup
+	  bkp_dir_stat=$?
+	  if [[ $bkp_dir_stat -ne "0" ]]; then
+   		echo "Couldn't create directory for backup at /opt/ backup"	  	
+   	  fi
+	  sudo chmod -R 777 /opt/backup
+      mkdir -p /opt/backup/dbbackup
+ fi
+}
+
+function ec2_action_stopped () {
+   echo "inside ec2_action_stopped"
+   #state=`aws ec2 describe-instance-status --instance-ids ${InstanceId} --query InstanceStatuses[*].InstanceState.Name --output text`
+   state=`aws ec2 describe-instances --instance-ids $InstanceId --output text | grep -w STATE | awk '{print $3}'`
+   echo "state is $state"
+   if ([ $state == "running" ]); then
+       echo "stopping the running instance"
+       db_backup       
+       salesforcecustomerid=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select salesforcecustomerid from customer where id=(select customerid from instances where pulsarinstanceid='$InstanceId')"`
+       #salesforcecustomerid=`sudo PGPASSWORD="admin" psql -h localhost -p 5432 -U postgres -d postgres -Atc "select customerid from contact WHERE instanceid=$InstanceId"`
+       echo "salesforcecustomerid is $salesforcecustomerid"
+       var1="saas-dbbucket-"
+       updatevar1=$var1$salesforcecustomerid
+       pg_dump -U postgres -h localhost -p 5432 -F c -b -v -f "/opt/backup/dbbackup/db.backup" postgres
+       aws s3api create-bucket --bucket $updatevar1 --region us-east-1
+       aws s3 cp /opt/backup/dbbackup/db.backup s3://$updatevar1/       
+       aws ec2 stop-instances --instance-ids $InstanceId --output text
+       sleep 20
+       sed -i "/customer\/$custid/,+4d" /etc/nginx/sites-available/pulsar_saas_ssl
+       sudo service nginx reload
+       #redis-cli publish notifications "{\"instanceid\":\"${InstanceId}\",\"state\":\"stopped\"}"
+   else
+       echo "ec2 instance is not running state"
+   fi
+}
+
+function ec2_action_terminate () {
+   echo "inside ec2_action_terminate"
+   state=`aws ec2 describe-instances --instance-ids $InstanceId --output text | grep -w STATE | awk '{print $3}'`
+   #state=`aws ec2 describe-instance-status --instance-ids ${InstanceId} --query InstanceStatuses[*].InstanceState.Name --output text`
+   echo "state is $state"   
+   if ([ $state == "running" ] || [ $state == "stopped" ]); then
+       echo "terminating either the running or stopped instance"
+       #db_backup
+       #pg_dump -U postgres -h localhost -p 5432 -F c -b -v -f "/opt/backup/dbbackup/$BUILDPACKAGE.backup" postgres  
+       #aws s3 cp /opt/backup/dbbackup/$BUILDPACKAGE.backup s3://pulsarsaas/db/
+       #volumeid=$(aws ec2 describe-instances --instance-ids ${InstanceId} --query 'Reservations[*].Instances[*].BlockDeviceMappings[*].Ebs.VolumeId' --output text);
+       #aws ec2 create-snapshot --volume-id $volumeid --description "root volume snapshot of provision instance." --output text
+       aws ec2 terminate-instances --instance-ids $InstanceId --output text
+       sleep 40
+       sed -i "/customer\/$custid/,+4d" /etc/nginx/sites-available/pulsar_saas_ssl
+       sudo service nginx reload
+       #redis-cli publish notifications "{\"instanceid\":\"${InstanceId}\",\"state\":\"terminated\"}"
+   else
+       echo "ec2 instance is neither running nor stopped state"
+   fi
+}
+
+if [ "$action" == "stop" ]; then
+   ec2_action_stopped
+elif [ "$action" == "terminate" ]; then
+   ec2_action_terminate
+else
+  echo "neither stop nor terminate condition"
+fi
+
